@@ -4,32 +4,37 @@ import (
 	"cmp"
 	"fmt"
 	"image"
+	"image/color"
 	"image/draw"
 	"math"
 	"path/filepath"
 
 	"github.com/fogleman/gg"
+	"golang.org/x/image/font/sfnt"
 )
 
 type renderer struct {
+	// In output pixels.
 	cfg     *Config
 	baseDir string
 	dc      *gg.Context
 	// Everything drawn on the sheet is clipped to it.
 	sheet *image.Alpha
+	fonts map[string]*sfnt.Font
 }
 
-// render resolves relative image paths against baseDir.
+// render resolves relative image and font paths against baseDir.
 func render(cfg *Config, baseDir string) (image.Image, error) {
-	r := &renderer{cfg: cfg, baseDir: baseDir, dc: gg.NewContext(cfg.Width, cfg.Height)}
+	cfg = cfg.scaled()
+	r := &renderer{cfg: cfg, baseDir: baseDir, dc: gg.NewContext(cfg.Width, cfg.Height), fonts: map[string]*sfnt.Font{}}
 	bg, err := parseColor(cfg.Background)
 	if err != nil {
 		return nil, fmt.Errorf("background: %w", err)
 	}
 	m := cfg.Margin
 	sheetW, sheetH := float64(cfg.Width)-2*m, float64(cfg.Height)-2*m
-	if cfg.SheetShadow != nil {
-		if err := r.shadow(*cfg.SheetShadow, m, m, sheetW, sheetH, cfg.SheetRadius); err != nil {
+	if s := cfg.SheetShadow.or(nil); s != nil {
+		if err := r.shadow(*s, m, m, sheetW, sheetH, cfg.SheetRadius); err != nil {
 			return nil, fmt.Errorf("sheet_shadow: %w", err)
 		}
 	}
@@ -40,11 +45,11 @@ func render(cfg *Config, baseDir string) (image.Image, error) {
 	r.dc.SetMask(r.sheet)
 
 	// All shadows go first so none falls on a neighbouring tile.
-	if cfg.TileShadow != nil {
-		for _, t := range cfg.Tiles {
-			x, y, w, h := r.bounds(t)
-			if err := r.shadow(*cfg.TileShadow, x, y, w, h, cfg.Radius); err != nil {
-				return nil, fmt.Errorf("tile_shadow: %w", err)
+	for i, t := range cfg.Tiles {
+		if s := t.Shadow.or(cfg.TileShadow); s != nil {
+			x, y, w, h := cfg.tileRect(t)
+			if err := r.shadow(*s, x, y, w, h, r.tileRadius(t)); err != nil {
+				return nil, fmt.Errorf("tile %d: shadow: %w", i+1, err)
 			}
 		}
 	}
@@ -56,13 +61,18 @@ func render(cfg *Config, baseDir string) (image.Image, error) {
 	return r.dc.Image(), nil
 }
 
+func (r *renderer) tileRadius(t Tile) float64 {
+	return *cmp.Or(t.Radius, &r.cfg.Radius)
+}
+
 func (r *renderer) tile(t Tile) error {
-	x, y, w, h := r.bounds(t)
+	x, y, w, h := r.cfg.tileRect(t)
+	radius := r.tileRadius(t)
 	bg, err := parseColor(cmp.Or(t.Background, r.cfg.TileBackground))
 	if err != nil {
 		return err
 	}
-	r.clip(x, y, w, h, r.cfg.Radius)
+	r.clip(x, y, w, h, radius)
 	r.dc.SetColor(bg)
 	r.dc.DrawRectangle(x, y, w, h)
 	r.dc.Fill()
@@ -71,10 +81,15 @@ func (r *renderer) tile(t Tile) error {
 		if l.Colors != nil {
 			err = r.gradient(l, x, y, w, h)
 		} else {
-			err = r.image(l, x, y, w, h)
+			err = r.place(l, x, y, w, h, radius)
 		}
 		if err != nil {
 			return fmt.Errorf("layer %d: %w", j+1, err)
+		}
+	}
+	if b := t.Border.or(r.cfg.TileBorder); b != nil {
+		if err := r.border(*b, x, y, w, h, radius); err != nil {
+			return fmt.Errorf("border: %w", err)
 		}
 	}
 	return nil
@@ -86,41 +101,74 @@ func (r *renderer) clip(x, y, w, h, radius float64) {
 	r.dc.Clip()
 }
 
-func (r *renderer) bounds(t Tile) (x, y, w, h float64) {
-	cellW, cellH := r.cfg.cellSize()
-	x, w = r.place(t.Cols, cellW)
-	y, h = r.place(t.Rows, cellH)
-	return x, y, w, h
-}
-
-func (r *renderer) place(cells cellRange, cellSize float64) (start, length float64) {
-	n := float64(cells.last - cells.first + 1)
-	return r.cfg.Margin + r.cfg.Padding + float64(cells.first-1)*(cellSize+r.cfg.Gap), n*cellSize + (n-1)*r.cfg.Gap
+func (r *renderer) border(b Border, x, y, w, h, radius float64) error {
+	c, err := parseColor(b.Color)
+	if err != nil {
+		return err
+	}
+	r.dc.SetColor(c)
+	r.dc.DrawRoundedRectangle(x, y, w, h, radius)
+	if iw, ih := w-2*b.Width, h-2*b.Width; iw > 0 && ih > 0 {
+		r.dc.DrawRoundedRectangle(x+b.Width, y+b.Width, iw, ih, max(radius-b.Width, 0))
+	}
+	r.dc.SetFillRuleEvenOdd()
+	r.dc.Fill()
+	r.dc.SetFillRuleWinding()
+	return nil
 }
 
 func (r *renderer) shadow(s Shadow, x, y, w, h, radius float64) error {
-	c, err := parseColor(cmp.Or(s.Color, "#00000066"))
+	c, err := s.color()
 	if err != nil {
 		return err
 	}
 	radii := gaussianBoxRadii(s.Blur / 2)
-	var reach float64
-	for _, br := range radii {
-		reach += float64(br)
-	}
+	reach := float64(sum(radii))
 	ox, oy := math.Floor(x+s.X-reach), math.Floor(y+s.Y-reach)
 	rw, rh := int(math.Ceil(x+s.X+w+reach)-ox), int(math.Ceil(y+s.Y+h+reach)-oy)
 
 	cast := roundedRectMask(rw, rh, x+s.X-ox, y+s.Y-oy, w, h, radius)
 	boxBlur(cast, radii)
 	caster := roundedRectMask(rw, rh, x-ox, y-oy, w, h, radius)
+	r.dc.DrawImage(tint(c, cast, caster), int(ox), int(oy))
+	return nil
+}
+
+func (s Shadow) color() (color.NRGBA, error) {
+	return parseColor(cmp.Or(s.Color, "#00000066"))
+}
+
+// castShadow returns the shadow that img casts dx, dy pixels away, over img's
+// bounds, which start at 0, 0.
+func castShadow(img *image.RGBA, s Shadow, dx, dy int, radii []int) (*image.NRGBA, error) {
+	c, err := s.color()
+	if err != nil {
+		return nil, err
+	}
+	w, h := img.Rect.Dx(), img.Rect.Dy()
+	caster, cast := image.NewAlpha(img.Rect), image.NewAlpha(img.Rect)
+	for y := range h {
+		for x := range w {
+			a := img.Pix[y*img.Stride+4*x+3]
+			caster.Pix[y*w+x] = a
+			if tx, ty := x+dx, y+dy; tx >= 0 && tx < w && ty >= 0 && ty < h {
+				cast.Pix[ty*w+tx] = a
+			}
+		}
+	}
+	boxBlur(cast, radii)
+	return tint(c, cast, caster), nil
+}
+
+// tint colors the alpha of cast with c, leaving out what caster covers. Both
+// masks must share their bounds and stride.
+func tint(c color.NRGBA, cast, caster *image.Alpha) *image.NRGBA {
 	img := image.NewNRGBA(cast.Rect)
 	for i, a := range cast.Pix {
 		img.Pix[4*i], img.Pix[4*i+1], img.Pix[4*i+2] = c.R, c.G, c.B
 		img.Pix[4*i+3] = uint8((uint32(c.A)*uint32(a)*uint32(255-caster.Pix[i]) + 255*255/2) / (255 * 255))
 	}
-	r.dc.DrawImage(img, int(ox), int(oy))
-	return nil
+	return img
 }
 
 func roundedRectMask(canvasW, canvasH int, x, y, w, h, radius float64) *image.Alpha {
@@ -128,6 +176,16 @@ func roundedRectMask(canvasW, canvasH int, x, y, w, h, radius float64) *image.Al
 	dc.DrawRoundedRectangle(x, y, w, h, radius)
 	dc.Fill()
 	return dc.AsMask()
+}
+
+func roundCorners(img *image.RGBA, radius float64) {
+	w, h := img.Rect.Dx(), img.Rect.Dy()
+	mask := roundedRectMask(w, h, 0, 0, float64(w), float64(h), radius)
+	for i, a := range mask.Pix {
+		for k := 4 * i; k < 4*i+4; k++ {
+			img.Pix[k] = uint8((uint32(img.Pix[k])*uint32(a) + 127) / 255)
+		}
+	}
 }
 
 // gaussianBoxRadii returns the radii of three box blurs that together
@@ -200,17 +258,37 @@ func boxBlurLine(line []float64, step, n, radius int, tmp []float64) {
 }
 
 func (r *renderer) gradient(l Layer, x, y, w, h float64) error {
-	angle := 180.0
-	if l.Angle != nil {
-		angle = *l.Angle
+	var grad gg.Gradient
+	if l.Gradient == "radial" {
+		cx, cy := x+w/2, y+h/2
+		switch {
+		case l.placedByXY():
+			cx, cy = x+orDefault(l.X, 0), y+orDefault(l.Y, 0)
+		case l.Position != nil:
+			cx, cy = x+w*(0.5+l.Position.x), y+h*(0.5+l.Position.y)
+		}
+		var radius float64
+		if l.Radius != nil {
+			radius = *l.Radius
+		} else {
+			for _, corner := range [][2]float64{{x, y}, {x + w, y}, {x, y + h}, {x + w, y + h}} {
+				radius = max(radius, math.Hypot(corner[0]-cx, corner[1]-cy))
+			}
+		}
+		grad = gg.NewRadialGradient(cx, cy, 0, cx, cy, radius)
+	} else {
+		angle := 180.0
+		if l.Angle != nil {
+			angle = *l.Angle
+		}
+		// Like CSS, the gradient line is just long enough for the first and last
+		// colors to land exactly on opposite corners.
+		sin, cos := math.Sincos(angle * math.Pi / 180)
+		half := (math.Abs(w*sin) + math.Abs(h*cos)) / 2
+		cx, cy := x+w/2, y+h/2
+		dx, dy := sin*half, -cos*half
+		grad = gg.NewLinearGradient(cx-dx, cy-dy, cx+dx, cy+dy)
 	}
-	// Like CSS, the gradient line is just long enough for the first and last
-	// colors to land exactly on opposite corners.
-	sin, cos := math.Sincos(angle * math.Pi / 180)
-	half := (math.Abs(w*sin) + math.Abs(h*cos)) / 2
-	cx, cy := x+w/2, y+h/2
-	dx, dy := sin*half, -cos*half
-	grad := gg.NewLinearGradient(cx-dx, cy-dy, cx+dx, cy+dy)
 	for i, s := range l.Colors {
 		c, err := parseColor(s)
 		if err != nil {
@@ -224,24 +302,43 @@ func (r *renderer) gradient(l Layer, x, y, w, h float64) error {
 	return nil
 }
 
-func (r *renderer) image(l Layer, tileX, tileY, tileW, tileH float64) error {
-	path := l.Image
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(r.baseDir, path)
+func (r *renderer) path(p string) string {
+	if filepath.IsAbs(p) {
+		return p
 	}
-	a, err := loadAsset(path)
+	return filepath.Join(r.baseDir, p)
+}
+
+// drawable is what an image or text layer places.
+type drawable interface {
+	// size is the natural size in output pixels.
+	size() (w, h float64)
+	// render draws at w×h pixels, from 0, 0. Text may spill outside that box.
+	render(w, h int) *image.RGBA
+}
+
+// place draws an image or text layer.
+func (r *renderer) place(l Layer, tileX, tileY, tileW, tileH, tileRadius float64) error {
+	var d drawable
+	var err error
+	if l.Text != "" {
+		d, err = r.text(l)
+	} else {
+		d, err = loadAsset(r.path(l.Image), r.cfg.scale())
+	}
 	if err != nil {
 		return err
 	}
 
 	x, y, w, h := tileX+l.Padding, tileY+l.Padding, tileW-2*l.Padding, tileH-2*l.Padding
 	if w < 1 || h < 1 {
-		return fmt.Errorf("padding %v leaves no room in a %.0fx%.0f tile", l.Padding, tileW, tileH)
+		s := r.cfg.scale()
+		return fmt.Errorf("padding %v leaves no room in a %.0fx%.0f tile", l.Padding/s, tileW/s, tileH/s)
 	}
 	if l.Padding > 0 {
 		// Concentric corners keep this clip inside the tile's, so it can replace it.
-		r.clip(x, y, w, h, max(r.cfg.Radius-l.Padding, 0))
-		defer r.clip(tileX, tileY, tileW, tileH, r.cfg.Radius)
+		r.clip(x, y, w, h, max(tileRadius-l.Padding, 0))
+		defer r.clip(tileX, tileY, tileW, tileH, tileRadius)
 	}
 
 	var angle float64
@@ -254,45 +351,71 @@ func (r *renderer) image(l Layer, tileX, tileY, tileW, tileH float64) error {
 	// it covers the box.
 	frameW, frameH := w*absCos+h*absSin, w*absSin+h*absCos
 
+	sized := l.Width != nil || l.Height != nil
 	fit := cmp.Or(l.Fit, "cover")
-	if l.Fit == "" && l.Repeat != "" {
+	if l.Fit == "" && (l.Repeat != "" || sized || l.placedByXY() || l.Text != "") {
 		fit = "none"
 	}
-	iw, ih := a.size()
-	scale := 1.0
+	iw, ih := d.size()
+	switch {
+	case l.Width != nil && l.Height != nil:
+		iw, ih = *l.Width, *l.Height
+	case l.Width != nil:
+		iw, ih = *l.Width, *l.Width*ih/iw
+	case l.Height != nil:
+		iw, ih = *l.Height*iw/ih, *l.Height
+	}
+	zoom := 1.0
 	switch fit {
 	case "cover":
-		scale = max(frameW/iw, frameH/ih)
+		zoom = max(frameW/iw, frameH/ih)
 	case "contain":
-		scale = min(w/(iw*absCos+ih*absSin), h/(iw*absSin+ih*absCos))
+		zoom = min(w/(iw*absCos+ih*absSin), h/(iw*absSin+ih*absCos))
 	}
-	dw, dh := max(1, round(iw*scale)), max(1, round(ih*scale))
+	dw, dh := max(1, round(iw*zoom)), max(1, round(ih*zoom))
 
 	var pos position
 	if l.Position != nil {
 		pos = *l.Position
 	}
+	cx, cy := x+w/2, y+h/2
 	// u, v is the image center's offset from the box center along the rotated axes.
 	var u, v float64
-	if fit == "cover" {
+	if fit == "cover" && !l.placedByXY() {
 		u, v = (frameW-float64(dw))*pos.x, (frameH-float64(dh))*pos.y
 	} else {
 		// Aligning the rotated image's bounding box keeps a contained image whole.
 		sx := (w - (float64(dw)*absCos + float64(dh)*absSin)) * pos.x
 		sy := (h - (float64(dw)*absSin + float64(dh)*absCos)) * pos.y
+		if l.placedByXY() {
+			// x and y place the unrotated image, which then turns about its center.
+			sx, sy = tileX+orDefault(l.X, 0)+float64(dw)/2-cx, tileY+orDefault(l.Y, 0)+float64(dh)/2-cy
+		}
 		u, v = sx*cos+sy*sin, sy*cos-sx*sin
+	}
+
+	shadow := l.Shadow.or(nil)
+	var radii []int
+	var reach int
+	if shadow != nil {
+		radii = gaussianBoxRadii(shadow.Blur / 2)
+		// Whatever casts a shadow onto the box must be on the canvas.
+		reach = int(math.Ceil(math.Hypot(shadow.X, shadow.Y))) + sum(radii)
 	}
 
 	// Rotating all copies together on one canvas, not one by one, keeps seams
 	// out of repeats.
-	cx, cy := x+w/2, y+h/2
-	ox, oy := int(math.Floor(cx-frameW/2))-1, int(math.Floor(cy-frameH/2))-1
-	canvas := image.NewRGBA(image.Rect(0, 0, int(math.Ceil(cx+frameW/2))+1-ox, int(math.Ceil(cy+frameH/2))+1-oy))
-	img := a.render(dw, dh)
+	ox, oy := int(math.Floor(cx-frameW/2))-1-reach, int(math.Floor(cy-frameH/2))-1-reach
+	canvas := image.NewRGBA(image.Rect(0, 0, int(math.Ceil(cx+frameW/2))+1+reach-ox, int(math.Ceil(cy+frameH/2))+1+reach-oy))
+	img := d.render(dw, dh)
+	if l.Radius != nil && *l.Radius > 0 {
+		roundCorners(img, *l.Radius)
+	}
 	ax, ay := round(cx+u-float64(dw)/2)-ox, round(cy+v-float64(dh)/2)-oy
+	b := img.Bounds()
 	for _, py := range repeatStarts(ay, dh, canvas.Rect.Dy(), l.Repeat == "y" || l.Repeat == "both") {
 		for _, px := range repeatStarts(ax, dw, canvas.Rect.Dx(), l.Repeat == "x" || l.Repeat == "both") {
-			draw.Draw(canvas, image.Rect(px, py, px+dw, py+dh), img, image.Point{}, draw.Src)
+			draw.Draw(canvas, b.Add(image.Pt(px, py)), img, b.Min, draw.Over)
 		}
 	}
 	if l.Opacity != nil {
@@ -304,6 +427,15 @@ func (r *renderer) image(l Layer, tileX, tileY, tileW, tileH float64) error {
 	r.dc.Push()
 	defer r.dc.Pop()
 	r.dc.RotateAbout(angle, cx, cy)
+	if shadow != nil {
+		// The shadow falls along the tile's axes, not the rotated canvas's.
+		dx, dy := shadow.X*cos+shadow.Y*sin, shadow.Y*cos-shadow.X*sin
+		cast, err := castShadow(canvas, *shadow, round(dx), round(dy), radii)
+		if err != nil {
+			return fmt.Errorf("shadow: %w", err)
+		}
+		r.dc.DrawImage(cast, ox, oy)
+	}
 	r.dc.DrawImage(canvas, ox, oy)
 	return nil
 }
@@ -328,4 +460,12 @@ func repeatStarts(at, size, total int, repeat bool) []int {
 
 func round(v float64) int {
 	return int(math.Round(v))
+}
+
+func sum(values []int) int {
+	var total int
+	for _, v := range values {
+		total += v
+	}
+	return total
 }
