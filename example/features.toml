@@ -1,0 +1,87 @@
+# Authored in 1600x1000 logical pixels and rendered at 2x: 3200x2000.
+width = 1600
+height = 1000
+scale = 2
+columns = 6
+rows = 5
+gap_x = 20
+gap_y = 18
+padding = 40
+radius = 24
+background = "#0a0a0f"
+tile_background = "#16161d"
+tile_border = { width = 1, color = "#ffffff1a" }
+tile_shadow = { y = 8, blur = 24, color = "#00000080" }
+require_full = true
+
+[[tiles]]
+cols = "1-3"
+rows = "1-3"
+layers = [
+  { gradient = "radial", position = "top left", radius = 520, colors = ["#7c3aed66", "#7c3aed00"] },
+  { image = "dots.svg", repeat = "both", opacity = 0.08 },
+  { image = "pill.svg", x = 40, y = 40, width = 64, height = 24, radius = 12 },
+  { text = "NEW", font = "fonts/Go-Bold.ttf", size = 12, letter_spacing = 1.5, color = "#052e16", x = 57, y = 46, line_height = 1 },
+  { text = "Release 4.2", font = "fonts/Go-Bold.ttf", size = 56, letter_spacing = -1.5, color = "#ffffff", x = 40, y = 84 },
+  { text = "Shared checklists, offline sync and a faster editor.\nAll in one update.", font = "fonts/Go-Regular.ttf", size = 20, line_height = 1.45, max_width = 340, color = "#a1a1aa", x = 40, y = 164 },
+  { image = "card.svg", x = 360, y = 300, width = 460, radius = 18, shadow = { y = 16, blur = 40, color = "#00000099" } },
+]
+
+[[tiles]]
+cols = "4-4"
+rows = "1-2"
+background = "#18122b"
+layers = [
+  { gradient = "radial", position = "bottom", colors = ["#c084fc55", "#c084fc00"] },
+  { text = "2.4×", font = "fonts/Go-Bold.ttf", size = 64, letter_spacing = -2, color = "#ffffff", position = "center", align = "center" },
+  { text = "faster sync", font = "fonts/Go-Regular.ttf", size = 18, color = "#c4b5fd", position = "bottom", padding = 28 },
+]
+
+[[tiles]]
+cols = "5-6"
+rows = "1-2"
+background = "#f4f4f5"
+radius = 12
+border = false
+shadow = false
+layers = [
+  { image = "icon.svg", fit = "none", position = "top left", padding = 32, radius = 14, shadow = { y = 6, blur = 14, color = "#6d28d966" } },
+  { text = "Offline first", font = "fonts/Go-Bold.ttf", size = 30, color = "#18181b", position = "bottom left", padding = 32 },
+]
+
+[[tiles]]
+cols = "4-6"
+rows = "3-3"
+layers = [
+  { angle = 90, colors = ["#f472b6", "#c084fc"] },
+  { text = "Available today on iOS, Android and the web", font = "fonts/Go-Bold.ttf", size = 26, color = "#ffffff", position = "left", padding = 32, max_width = 420, line_height = 1.25 },
+]
+
+[[tiles]]
+cols = "1-2"
+rows = "4-5"
+layers = [
+  { image = "photo.jpg" },
+  { colors = ["#00000000", "#000000cc"] },
+  { text = "Built with\nyour team", font = "fonts/Go-Bold.ttf", size = 32, line_height = 1.1, color = "#ffffff", position = "bottom left", padding = 28, shadow = { y = 2, blur = 8, color = "#00000099" } },
+]
+
+[[tiles]]
+cols = "3-4"
+rows = "4-5"
+background = "#101018"
+layers = [
+  { gradient = "radial", x = 380, y = 40, radius = 300, colors = ["#f472b633", "#f472b600"] },
+  { text = "Insights", font = "fonts/Go-Bold.ttf", size = 28, color = "#ffffff", x = 28, y = 26 },
+  { image = "chart.svg", x = 120, y = 110, width = 340, radius = 16, angle = -6, shadow = { y = 14, blur = 32, color = "#000000aa" } },
+]
+
+[[tiles]]
+cols = "5-6"
+rows = "4-5"
+background = "#0f172a"
+layers = [
+  { image = "dots.svg", repeat = "both", opacity = 0.15 },
+  { gradient = "radial", colors = ["#38bdf855", "#38bdf800"], radius = 260 },
+  { text = "Ship it\ntoday.", font = "fonts/Go-Bold.ttf", size = 48, line_height = 1.1, align = "center", color = "#e0f2fe", position = "center" },
+]
