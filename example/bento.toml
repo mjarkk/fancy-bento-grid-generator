@@ -1,0 +1,54 @@
+width = 1296
+height = 906
+columns = 4
+rows = 3
+background = "#0b0b0f"
+tile_background = "#1c1c22"
+gap = 16
+padding = 32
+radius = 28
+margin = 48
+sheet_radius = 60
+sheet_shadow = { y = 12, blur = 32, color = "#00000066" }
+
+[[tiles]]
+cols = "1-2"
+rows = "1-2"
+layers = [
+  { image = "photo.jpg" },
+  { colors = ["#00000000", "#00000000", "#000000b3"] },
+  { image = "hero.svg" },
+]
+
+[[tiles]]
+cols = "3-3"
+rows = "1-1"
+layers = [{ image = "fast.svg" }]
+
+[[tiles]]
+cols = "4-4"
+rows = "1-2"
+background = "#18122b"
+layers = [
+  { angle = 160, colors = ["#7c3aed66", "#7c3aed00"] },
+  { image = "stat.svg" },
+]
+
+[[tiles]]
+cols = "3-3"
+rows = "2-2"
+layers = [{ image = "secure.svg" }]
+
+[[tiles]]
+cols = "1-1"
+rows = "3-3"
+background = "#f4f4f5"
+layers = [{ image = "logo.svg" }]
+
+[[tiles]]
+cols = "2-4"
+rows = "3-3"
+layers = [
+  { angle = 90, colors = ["#f472b6", "#c084fc"] },
+  { image = "banner.svg" },
+]
